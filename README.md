@@ -20,7 +20,7 @@ install.packages("shinylive")
 shinylive::export(
   "app",
   "docs",
-  template_params = list(title = "anovapowersim Power Calculator")
+  template_params = list(title = "anovapowersim Shiny app")
 )
 ```
 
