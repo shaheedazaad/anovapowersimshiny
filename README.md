@@ -1,6 +1,6 @@
 # anovapowersim shinylive app
 
-This repository contains a Shiny app for running `anovapowersim::power_n()` in the browser with shinylive.
+This repository contains a Shiny app for running `anovapowersim::power_n()` in the browser with shinylive. (https://shaheedazaad.github.io/anovapowersim/)
 
 ## Local Shiny run
 
