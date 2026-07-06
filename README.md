@@ -17,7 +17,11 @@ run_app("app")
 
 ```r
 install.packages("shinylive")
-shinylive::export("app", "docs")
+shinylive::export(
+  "app",
+  "docs",
+  template_params = list(title = "anovapowersim Power Calculator")
+)
 ```
 
 Then configure GitHub Pages to serve from the `docs/` folder.
