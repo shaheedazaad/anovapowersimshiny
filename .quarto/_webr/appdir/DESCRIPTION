@@ -1,0 +1,11 @@
+Imports:
+    shiny,
+    car,
+    dplyr,
+    future,
+    future.apply,
+    MASS,
+    purrr,
+    tibble,
+    tidyr
+
