@@ -275,6 +275,35 @@ ui <- fluidPage(
         gap: 12px;
         margin-bottom: 14px;
       }
+      .progress-panel {
+        background: #ecfdf5;
+        border: 1px solid #99f6e4;
+        border-radius: 8px;
+        color: #134e4a;
+        margin-bottom: 14px;
+        padding: 12px;
+      }
+      .progress-label {
+        font-weight: 650;
+        margin-bottom: 8px;
+      }
+      .progress-detail {
+        color: #0f766e;
+        font-size: 13px;
+        margin: 8px 0 0;
+      }
+      .progress-log {
+        background: #12302d;
+        border-radius: 6px;
+        color: #d1fae5;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        margin: 10px 0 0;
+        max-height: 150px;
+        overflow: auto;
+        padding: 8px;
+        white-space: pre-wrap;
+      }
       .metric {
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -457,6 +486,7 @@ ui <- fluidPage(
         div(
           class = "panel",
           h2("Results"),
+          uiOutput("progress"),
           uiOutput("summary"),
           uiOutput("warnings"),
           plotOutput("curve_plot", height = 300),
@@ -484,6 +514,14 @@ server <- function(input, output, session) {
   running <- reactiveVal(FALSE)
   result <- reactiveVal(NULL)
   run_warnings <- reactiveVal(character())
+  progress_state <- reactiveVal(list(
+    active = FALSE,
+    lines = character()
+  ))
+
+  set_progress_state <- function(state) {
+    progress_state(state)
+  }
 
   observeEvent(input$add_factor, {
     id <- next_factor_id()
@@ -573,7 +611,7 @@ server <- function(input, output, session) {
       character()
     }
     selected <- isolate(input$term)
-    if (!selected %in% choices) {
+    if (!length(selected) || !selected %in% choices) {
       selected <- if (length(choices)) choices[[1]] else character()
     }
     updateSelectInput(session, "term", choices = choices, selected = selected)
@@ -613,10 +651,22 @@ server <- function(input, output, session) {
   observeEvent(input$run, {
     args <- power_args()
     run_warnings(character())
+    result(NULL)
     running(TRUE)
-    on.exit(running(FALSE), add = TRUE)
+    set_progress_state(list(
+      active = TRUE,
+      lines = character()
+    ))
 
-    withProgress(message = "Running simulations", value = 0.2, {
+    session$onFlushed(function() {
+      on.exit({
+        running(FALSE)
+        set_progress_state(list(
+          active = FALSE,
+          lines = character()
+        ))
+      }, add = TRUE)
+
       fit <- withCallingHandlers(
         tryCatch(
           do.call(power_n_backend, args),
@@ -633,9 +683,8 @@ server <- function(input, output, session) {
           invokeRestart("muffleWarning")
         }
       )
-      incProgress(0.8)
       result(fit)
-    })
+    }, once = TRUE)
   })
 
   output$run_status <- renderUI({
@@ -644,6 +693,24 @@ server <- function(input, output, session) {
     } else {
       NULL
     }
+  })
+
+  output$progress <- renderUI({
+    state <- progress_state()
+    if (!isTRUE(state$active) && !length(state$lines)) {
+      return(NULL)
+    }
+    div(
+      class = "progress-panel",
+      div(
+        class = "progress-label",
+        "Simulations are running"
+      ),
+      div(
+        class = "progress-detail",
+        "This can take a few minutes. Keep this browser tab open until the results appear."
+      )
+    )
   })
 
   output$summary <- renderUI({
