@@ -7,10 +7,54 @@ vendor_candidates <- file.path(
   "R"
 )
 vendor_dir <- vendor_candidates[dir.exists(vendor_candidates)][[1]]
-for (file in c("utils.R", "compute_scale_factor.R", "power_curve.R", "print_methods.R")) {
+for (file in c("utils.R", "power_calc_helpers.R", "power_n_calc.R", "print_methods.R")) {
   source(file.path(vendor_dir, file), local = TRUE)
 }
-power_n_backend <- power_n
+power_n_backend <- power_n_calc
+
+power_n_calc_arg_names <- c(
+  "between",
+  "within",
+  "term",
+  "target_pes",
+  "power",
+  "alpha",
+  "n_start",
+  "n_max",
+  "gpower"
+)
+
+power_n_calc_args <- function(args) {
+  args[power_n_calc_arg_names]
+}
+
+power_n_defaults <- list(
+  power = 0.90,
+  alpha = 0.05,
+  n_start = NULL,
+  n_max = 5000L,
+  gpower = FALSE
+)
+
+power_n_call_args <- function(args) {
+  out <- args[c("between", "within", "term", "target_pes")]
+  if (!isTRUE(all.equal(args$power, power_n_defaults$power))) {
+    out$power <- args$power
+  }
+  if (!isTRUE(all.equal(args$alpha, power_n_defaults$alpha))) {
+    out$alpha <- args$alpha
+  }
+  if (!is.null(args$n_start)) {
+    out$n_start <- args$n_start
+  }
+  if (!isTRUE(all.equal(args$n_max, power_n_defaults$n_max))) {
+    out$n_max <- args$n_max
+  }
+  if (isTRUE(args$gpower)) {
+    out$gpower <- TRUE
+  }
+  out
+}
 
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
@@ -92,6 +136,29 @@ design_terms <- function(factor_names) {
     }),
     use.names = FALSE
   )
+}
+
+term_choices <- function(terms) {
+  labels <- ifelse(
+    grepl(":", terms, fixed = TRUE),
+    paste0(terms, " (interaction)"),
+    paste0(terms, " (main effect)")
+  )
+  names(terms) <- labels
+  terms
+}
+
+term_kind <- function(term) {
+  if (grepl(":", term, fixed = TRUE)) "interaction" else "main effect"
+}
+
+format_count <- function(x) {
+  if (is.na(x)) return("not reached")
+  format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
+}
+
+format_decimal <- function(x, digits = 3) {
+  sub("^0", "", sprintf(paste0("%.", digits, "f"), x))
 }
 
 format_call <- function(args) {
@@ -269,12 +336,6 @@ ui <- fluidPage(
         background: var(--accent-dark);
         border-color: var(--accent-dark);
       }
-      .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
-        margin-bottom: 14px;
-      }
       .progress-panel {
         background: #ecfdf5;
         border: 1px solid #99f6e4;
@@ -304,22 +365,68 @@ ui <- fluidPage(
         padding: 8px;
         white-space: pre-wrap;
       }
-      .metric {
-        border: 1px solid var(--line);
+      .result-statement {
+        background: #eef6f4;
+        border: 1px solid #b7d9d3;
+        border-left: 6px solid var(--accent);
         border-radius: 8px;
-        padding: 12px;
-        background: #fbfcfd;
+        margin-bottom: 14px;
+        padding: 16px 18px;
       }
-      .metric-label {
+      .result-sentence {
+        font-size: 20px;
+        line-height: 1.35;
+        margin: 0;
+      }
+      .result-sentence strong {
+        color: var(--accent-dark);
+        font-weight: 700;
+      }
+      .result-statement.not-reached {
+        background: #fff1f2;
+        border-color: #fecdd3;
+        border-left-color: #be123c;
+      }
+      .result-statement.not-reached .result-sentence strong {
+        color: #9f1239;
+      }
+      .result-detail {
         color: var(--muted);
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: .04em;
+        margin: 8px 0 0;
       }
-      .metric-value {
-        font-size: 24px;
+      .empty-results {
+        background: #fbfcfd;
+        border: 1px dashed #b8c2cc;
+        border-radius: 8px;
+        color: var(--ink);
+        padding: 18px;
+      }
+      .empty-results h3 {
+        font-size: 16px;
+        line-height: 1.3;
+        margin: 0 0 6px;
+      }
+      .empty-results p {
+        color: var(--muted);
+        margin: 0;
+      }
+      .result-view .nav-tabs {
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 12px;
+      }
+      .result-view .nav-tabs > li > a {
+        color: var(--muted);
+        border-radius: 6px 6px 0 0;
+        padding: 8px 12px;
+      }
+      .result-view .nav-tabs > li.active > a,
+      .result-view .nav-tabs > li.active > a:focus,
+      .result-view .nav-tabs > li.active > a:hover {
+        color: var(--accent-dark);
         font-weight: 650;
-        margin-top: 4px;
+      }
+      .table-scroll {
+        overflow-x: auto;
       }
       .code-box {
         background: #111827;
@@ -362,7 +469,6 @@ ui <- fluidPage(
         .app-shell { padding: 16px; }
         .app-header { display: block; }
         .layout { grid-template-columns: 1fr; }
-        .summary-grid { grid-template-columns: 1fr; }
       }
       @media (max-width: 560px) {
         .factor-row {
@@ -384,7 +490,7 @@ ui <- fluidPage(
       class = "app-header",
       div(
         h1("anovapowersim Shiny app"),
-        p(class = "subtitle", "Balanced factorial ANOVA sample size search")
+        p(class = "subtitle", "Balanced factorial ANOVA power calculation")
       ),
       tags$a(
         href = "https://shaheedazaad.github.io/anovapowersim/reference/power_n.html",
@@ -403,7 +509,9 @@ ui <- fluidPage(
           rel = "noopener noreferrer",
           "anovapowersim"
         ),
-        " R package. For the full feature set and reproducible workflows, use the R package directly."
+        " R package. Browser runs use analytic power calculations; the R call below shows the equivalent ",
+        code("power_n()"),
+        " simulation call for reproducible workflows."
       ),
       p(
         "Citation: Azaad, S. (2026). A priori power analysis for ANOVA interaction effects with the anovapowersim R package: a short introduction. ",
@@ -412,6 +520,16 @@ ui <- fluidPage(
           target = "_blank",
           rel = "noopener noreferrer",
           "https://doi.org/10.31234/osf.io/86rsy_v1"
+        ),
+        "."
+      ),
+      p(
+        "This app is in beta. Please report issues at ",
+        tags$a(
+          href = "https://github.com/shaheedazaad/anovapowersimshiny",
+          target = "_blank",
+          rel = "noopener noreferrer",
+          "https://github.com/shaheedazaad/anovapowersimshiny"
         ),
         "."
       )
@@ -435,30 +553,18 @@ ui <- fluidPage(
         ),
         div(
           class = "panel",
-          h2("Power Analysis"),
+          h2("Power Calculation"),
           selectInput("term", "Term", choices = character()),
           div(
             class = "inline-grid",
             numericInput("target_pes", "Target partial eta squared", value = 0.03, min = 0.001, max = 0.999, step = 0.001),
             numericInput("power", "Target power", value = 0.90, min = 0.001, max = 0.999, step = 0.01),
-            numericInput("n_sims", "Simulations per sample size", value = 10000, min = 1, step = 100),
             numericInput("alpha", "Alpha", value = 0.05, min = 0.001, max = 0.999, step = 0.001),
-            numericInput("seed", "Seed", value = 123, min = 1, step = 1)
-          ),
-          div(
-            class = "checks",
-            checkboxInput("use_seed", "Set seed", value = TRUE),
-            checkboxInput("parallel", "Parallel", value = TRUE)
+            numericInput("n_max", "Search up to n per cell", value = power_n_defaults$n_max, min = 1, step = 100)
           ),
           tags$details(
             class = "advanced-settings",
             tags$summary("Advanced settings"),
-            div(
-              class = "inline-grid",
-              selectInput("ss_type", "Sums of squares", choices = c("I", "II", "III"), selected = "III"),
-              numericInput("n_max", "Maximum n per cell", value = 1000, min = 1, step = 1),
-              numericInput("tol", "Tolerance", value = 0.03, min = 0.001, step = 0.001)
-            ),
             div(
               class = "checks",
               checkboxInput("use_n_start", "Set n_start", value = FALSE),
@@ -466,18 +572,12 @@ ui <- fluidPage(
                 condition = "input.use_n_start",
                 numericInput("n_start", "n_start", value = 10, min = 1, step = 1)
               ),
-              checkboxInput("use_cores", "Set cores", value = FALSE),
-              conditionalPanel(
-                condition = "input.use_cores",
-                numericInput("cores", "cores", value = 2, min = 1, step = 1)
-              ),
-              checkboxInput("gpower", "G*Power convention", value = FALSE),
-              checkboxInput("progress", "Text progress", value = FALSE)
+              checkboxInput("gpower", "G*Power convention", value = FALSE)
             )
           ),
           div(
             class = "run-row",
-            actionButton("run", "Run", icon = icon("play"), class = "btn-primary"),
+            actionButton("run", "Calculate", icon = icon("play"), class = "btn-primary"),
             uiOutput("run_status")
           )
         )
@@ -489,8 +589,7 @@ ui <- fluidPage(
           uiOutput("progress"),
           uiOutput("summary"),
           uiOutput("warnings"),
-          plotOutput("curve_plot", height = 300),
-          tableOutput("results_table")
+          uiOutput("result_view_ui")
         ),
         div(
           class = "panel",
@@ -606,13 +705,14 @@ server <- function(input, output, session) {
     problem <- design_problem()
     df <- current_design()
     choices <- if (is.null(problem)) {
-      design_terms(df$name)
+      term_choices(design_terms(df$name))
     } else {
       character()
     }
+    values <- unname(choices)
     selected <- isolate(input$term)
-    if (!length(selected) || !selected %in% choices) {
-      selected <- if (length(choices)) choices[[1]] else character()
+    if (!length(selected) || !selected %in% values) {
+      selected <- if (length(values)) values[[1]] else character()
     }
     updateSelectInput(session, "term", choices = choices, selected = selected)
   })
@@ -629,27 +729,21 @@ server <- function(input, output, session) {
       term = input$term,
       target_pes = input$target_pes,
       power = input$power,
-      n_sims = as.integer(input$n_sims),
       alpha = input$alpha,
-      ss_type = input$ss_type,
       n_start = if (isTRUE(input$use_n_start)) as.integer(input$n_start) else NULL,
       n_max = as.integer(input$n_max),
-      tol = input$tol,
-      gpower = isTRUE(input$gpower),
-      progress = isTRUE(input$progress),
-      parallel = isTRUE(input$parallel),
-      cores = if (isTRUE(input$use_cores)) as.integer(input$cores) else NULL,
-      seed = if (isTRUE(input$use_seed)) as.integer(input$seed) else NULL
+      gpower = isTRUE(input$gpower)
     )
     args
   })
 
   output$call <- renderText({
-    tryCatch(format_call(power_args()), error = function(e) "")
+    tryCatch(format_call(power_n_call_args(power_args())), error = function(e) "")
   })
 
   observeEvent(input$run, {
-    args <- power_args()
+    args <- power_n_calc_args(power_args())
+    captured_warnings <- character()
     run_warnings(character())
     result(NULL)
     running(TRUE)
@@ -678,9 +772,13 @@ server <- function(input, output, session) {
         warning = function(w) {
           msg <- conditionMessage(w)
           if (should_show_power_warning(msg)) {
-            run_warnings(unique(c(run_warnings(), msg)))
+            captured_warnings <<- unique(c(captured_warnings, msg))
+            run_warnings(captured_warnings)
           }
-          invokeRestart("muffleWarning")
+          restart <- findRestart("muffleWarning")
+          if (!is.null(restart)) {
+            invokeRestart(restart)
+          }
         }
       )
       result(fit)
@@ -689,7 +787,7 @@ server <- function(input, output, session) {
 
   output$run_status <- renderUI({
     if (isTRUE(running())) {
-      span(class = "text-muted", "Running...")
+      span(class = "text-muted", "Calculating...")
     } else {
       NULL
     }
@@ -704,11 +802,11 @@ server <- function(input, output, session) {
       class = "progress-panel",
       div(
         class = "progress-label",
-        "Simulations are running"
+        "Power calculation is running"
       ),
       div(
         class = "progress-detail",
-        "This can take a few minutes. Keep this browser tab open until the results appear."
+        "Keep this browser tab open until the results appear."
       )
     )
   })
@@ -716,24 +814,85 @@ server <- function(input, output, session) {
   output$summary <- renderUI({
     fit <- result()
     if (is.null(fit)) {
-      return(div(class = "text-muted", "No run yet."))
+      return(div(
+        class = "empty-results",
+        h3("Ready to calculate power"),
+        p("Enter the design details, choose the ANOVA term and target effect size, then click Calculate.")
+      ))
     }
+    kind <- term_kind(fit$term)
+    power_text <- format_decimal(fit$power)
+    pes_text <- format_decimal(fit$target_pes)
+    alpha_text <- format_decimal(fit$alpha)
+    n_per_cell_text <- format_count(fit$n_needed)
+    total_n_text <- format_count(fit$total_n_needed)
+    between_cells <- fit$design$n_between_cells %||% 1L
+    detail <- if (is.na(fit$n_needed)) {
+      tagList(
+        sprintf(
+          "The search ran up to n_max = %s participants per between-subjects cell at alpha = %s with target partial eta squared = %s.",
+          format_count(max(fit$results$n_per_cell, na.rm = TRUE)),
+          alpha_text,
+          pes_text
+        ),
+        " Increase ",
+        strong("Search up to n per cell"),
+        " and calculate again to extend the search."
+      )
+    } else if (between_cells > 1L) {
+      sprintf(
+        "This corresponds to %s participants per between-subjects cell at alpha = %s with target partial eta squared = %s.",
+        n_per_cell_text,
+        alpha_text,
+        pes_text
+      )
+    } else {
+      sprintf(
+        "This is based on alpha = %s and target partial eta squared = %s.",
+        alpha_text,
+        pes_text
+      )
+    }
+
     div(
-      class = "summary-grid",
-      div(
-        class = "metric",
-        div(class = "metric-label", "n per cell"),
-        div(class = "metric-value", ifelse(is.na(fit$n_needed), "NA", fit$n_needed))
-      ),
-      div(
-        class = "metric",
-        div(class = "metric-label", "total N"),
-        div(class = "metric-value", ifelse(is.na(fit$total_n_needed), "NA", fit$total_n_needed))
-      ),
-      div(
-        class = "metric",
-        div(class = "metric-label", "term"),
-        div(class = "metric-value", fit$term)
+      class = if (is.na(fit$n_needed)) "result-statement not-reached" else "result-statement",
+      if (is.na(fit$n_needed)) {
+        p(
+          class = "result-sentence",
+          "The target power of ",
+          strong(power_text),
+          " was not reached for the ",
+          strong(fit$term),
+          " ",
+          kind,
+          "."
+        )
+      } else {
+        p(
+          class = "result-sentence",
+          strong(total_n_text),
+          " participants are needed to achieve ",
+          strong(power_text),
+          " power for the ",
+          strong(fit$term),
+          " ",
+          kind,
+          "."
+        )
+      },
+      p(class = "result-detail", detail)
+    )
+  })
+
+  output$result_view_ui <- renderUI({
+    req(result())
+    div(
+      class = "result-view",
+      tabsetPanel(
+        id = "result_view",
+        type = "tabs",
+        tabPanel("Plot", plotOutput("curve_plot", height = 300)),
+        tabPanel("Table", div(class = "table-scroll", tableOutput("results_table")))
       )
     )
   })
@@ -754,36 +913,39 @@ server <- function(input, output, session) {
     fit <- result()
     req(fit)
     results <- as.data.frame(fit$results)
-    validate(need(nrow(results) > 0, "No simulation rows returned."))
+    validate(need(nrow(results) > 0, "No power rows returned."))
+    validate(need(any(is.finite(results$power_calc)), "No finite calculated power values returned."))
 
-    ylim <- range(c(results$power_calc, results$power_sim, fit$power), na.rm = TRUE)
+    has_sim <- "power_sim" %in% names(results) && any(is.finite(results$power_sim))
+    ylim <- range(c(results$power_calc, if (has_sim) results$power_sim, fit$power), na.rm = TRUE)
     ylim <- c(max(0, ylim[[1]] - 0.05), min(1, ylim[[2]] + 0.05))
     plot(
       results$n_per_cell,
-      results$power_sim,
+      results$power_calc,
       type = "b",
-      pch = 19,
+      pch = 17,
       col = "#0f766e",
       ylim = ylim,
       xlab = "n per between-subjects cell",
       ylab = "Power"
     )
-    lines(results$n_per_cell, results$power_calc, type = "b", pch = 17, col = "#374151")
+    if (has_sim) {
+      lines(results$n_per_cell, results$power_sim, type = "b", pch = 19, col = "#374151")
+    }
     abline(h = fit$power, lty = 2, col = "#9f1239")
-    legend(
-      "bottomright",
-      legend = c("Simulated", "Calculated", "Target"),
-      col = c("#0f766e", "#374151", "#9f1239"),
-      lty = c(1, 1, 2),
-      pch = c(19, 17, NA),
-      bty = "n"
-    )
+    legend_labels <- c("Calculated", if (has_sim) "Simulated", "Target")
+    legend_cols <- c("#0f766e", if (has_sim) "#374151", "#9f1239")
+    legend_pch <- c(17, if (has_sim) 19, NA)
+    legend_lty <- c(1, if (has_sim) 1, 2)
+    legend("bottomright", legend = legend_labels, col = legend_cols,
+           lty = legend_lty, pch = legend_pch, bty = "n")
   })
 
   output$results_table <- renderTable({
     fit <- result()
     req(fit)
-    as.data.frame(fit$results)
+    results <- as.data.frame(fit$results)
+    results[, setdiff(names(results), c("n_sims", "power_sim")), drop = FALSE]
   }, striped = TRUE, bordered = TRUE, digits = 3)
 }
 
