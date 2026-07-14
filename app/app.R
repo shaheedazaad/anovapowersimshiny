@@ -564,6 +564,7 @@ ui <- fluidPage(
           ),
           tags$details(
             class = "advanced-settings",
+            open = "open",
             tags$summary("Advanced settings"),
             div(
               class = "checks",
