@@ -21,7 +21,8 @@ power_n_calc_arg_names <- c(
   "alpha",
   "n_start",
   "n_max",
-  "gpower"
+  "gpower",
+  "epsilon"
 )
 
 power_n_calc_args <- function(args) {
@@ -33,11 +34,12 @@ power_n_defaults <- list(
   alpha = 0.05,
   n_start = NULL,
   n_max = 5000L,
-  gpower = FALSE
+  gpower = FALSE,
+  epsilon = 1
 )
 
 power_n_call_args <- function(args) {
-  out <- args[c("between", "within", "term", "target_pes")]
+  out <- args[c("between", "within", "term", "target_pes", "epsilon")]
   if (!isTRUE(all.equal(args$power, power_n_defaults$power))) {
     out$power <- args$power
   }
@@ -180,12 +182,160 @@ format_call <- function(args) {
   }
 
   lines <- sprintf("  %s = %s", names(args), vapply(args, value_to_code, character(1)))
-  paste0("power_n(\n", paste(lines, collapse = ",\n"), "\n)")
+  paste0(
+    "install.packages(\"pak\")\n",
+    "pak::pak(\"shaheedazaad/anovapowersim\")\n",
+    "library(anovapowersim)\n\n",
+    "power_n_calc(\n", paste(lines, collapse = ",\n"), "\n)"
+  )
+}
+
+draw_power_curve <- function(fit, show_x_label = TRUE) {
+  results <- as.data.frame(fit$results)
+  has_sim <- "power_sim" %in% names(results) && any(is.finite(results$power_sim))
+  ylim <- range(c(results$power_calc, if (has_sim) results$power_sim, fit$power), na.rm = TRUE)
+  ylim <- c(max(0, ylim[[1]] - 0.05), min(1, ylim[[2]] + 0.05))
+  plot(
+    results$n_per_cell,
+    results$power_calc,
+    type = "b",
+    pch = 17,
+    col = "#0f766e",
+    ylim = ylim,
+    xlab = if (show_x_label) "n per between-subjects cell" else "",
+    ylab = "Power"
+  )
+  if (has_sim) {
+    lines(results$n_per_cell, results$power_sim, type = "b", pch = 19, col = "#374151")
+  }
+  abline(h = fit$power, lty = 2, col = "#9f1239")
+  legend_labels <- c("Calculated", if (has_sim) "Simulated", "Target")
+  legend_cols <- c("#0f766e", if (has_sim) "#374151", "#9f1239")
+  legend_pch <- c(17, if (has_sim) 19, NA)
+  legend_lty <- c(1, if (has_sim) 1, 2)
+  legend("bottomright", legend = legend_labels, col = legend_cols,
+         lty = legend_lty, pch = legend_pch, bty = "n")
+}
+
+report_factor_text <- function(design, type) {
+  names <- design[[type]] %||% character()
+  level_counts <- design$level_counts %||% integer()
+  if (!length(names)) {
+    return("None")
+  }
+  paste(
+    sprintf("%s (%s levels)", names, level_counts[names]),
+    collapse = "; "
+  )
+}
+
+report_results_table <- function(fit) {
+  results <- as.data.frame(fit$results)
+  fields <- c("n_per_cell", "total_n", "num_df", "den_df", "ncp", "power_calc")
+  labels <- c("n per cell", "Total N", "Numerator df", "Denominator df", "NCP", "Power")
+  table <- results[, fields, drop = FALSE]
+  names(table) <- labels
+  table[["n per cell"]] <- format(table[["n per cell"]], trim = TRUE, scientific = FALSE)
+  table[["Total N"]] <- format(table[["Total N"]], trim = TRUE, scientific = FALSE)
+  for (field in c("Numerator df", "Denominator df", "NCP", "Power")) {
+    table[[field]] <- formatC(table[[field]], format = "f", digits = 3)
+  }
+  as.matrix(table)
+}
+
+draw_report_table <- function(table) {
+  x <- c(0.08, 0.22, 0.39, 0.60, 0.77, 0.91)
+  plot.new()
+  text(0.5, 0.96, "Power curve results", font = 2, cex = 0.85)
+  text(x, 0.88, colnames(table), font = 2, cex = 0.64)
+  segments(0.04, 0.85, 0.96, 0.85, col = "#6b7280")
+  row_spacing <- min(0.04, 0.70 / max(1L, nrow(table) - 1L))
+  y <- 0.79 - (seq_len(nrow(table)) - 1L) * row_spacing
+  for (i in seq_len(nrow(table))) {
+    text(x, y[[i]], table[i, ], cex = 0.64)
+  }
+}
+
+write_power_report <- function(file, fit) {
+  table <- report_results_table(fit)
+
+  grDevices::pdf(file, width = 8.5, height = 11)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  graphics::par(mar = c(0, 0, 0, 0))
+  graphics::plot.new()
+  graphics::text(0.5, 0.96, "ANOVA power analysis report", font = 2, cex = 1.25)
+  graphics::text(0.06, 0.91, paste("Between-subjects factors:", report_factor_text(fit$design, "between")), adj = 0, cex = 0.8)
+  graphics::text(0.06, 0.875, paste("Within-subjects factors:", report_factor_text(fit$design, "within")), adj = 0, cex = 0.8)
+  graphics::text(0.06, 0.84, paste("Tested term:", fit$term), adj = 0, cex = 0.8)
+  graphics::text(
+    0.06, 0.805,
+    sprintf("Target power: %.3f    Alpha: %.3f    Target partial eta squared: %.3f", fit$power, fit$alpha, fit$target_pes),
+    adj = 0, cex = 0.8
+  )
+  graphics::text(0.06, 0.775, sprintf("Nonsphericity correction: %.3f", fit$epsilon), adj = 0, cex = 0.8)
+  result_text <- if (is.na(fit$n_needed)) {
+    "Target power was not reached within the requested search range."
+  } else {
+    sprintf("Required sample: %s per between-subjects cell (%s total participants).", fit$n_needed, fit$total_n_needed)
+  }
+  graphics::text(0.06, 0.745, result_text, adj = 0, font = 2, cex = 0.8)
+  graphics::par(fig = c(0.11, 0.91, 0.48, 0.70), new = TRUE, mar = c(3.5, 3.8, 0.5, 0.5))
+  draw_power_curve(fit, show_x_label = FALSE)
+  graphics::par(fig = c(0.06, 0.94, 0.06, 0.45), new = TRUE, mar = c(0, 0, 0, 0))
+  draw_report_table(table)
+}
+
+base64_encode <- function(bytes) {
+  if (!length(bytes)) {
+    return("")
+  }
+  alphabet <- strsplit("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", "", fixed = TRUE)[[1]]
+  padding <- (3L - length(bytes) %% 3L) %% 3L
+  triplets <- matrix(
+    c(as.integer(bytes), rep.int(0L, padding)),
+    ncol = 3L,
+    byrow = TRUE
+  )
+  indices <- cbind(
+    bitwShiftR(triplets[, 1L], 2L),
+    bitwOr(bitwShiftL(bitwAnd(triplets[, 1L], 3L), 4L), bitwShiftR(triplets[, 2L], 4L)),
+    bitwOr(bitwShiftL(bitwAnd(triplets[, 2L], 15L), 2L), bitwShiftR(triplets[, 3L], 6L)),
+    bitwAnd(triplets[, 3L], 63L)
+  ) + 1L
+  encoded <- vapply(
+    seq_len(nrow(indices)),
+    function(i) paste0(alphabet[indices[i, ]], collapse = ""),
+    character(1)
+  )
+  if (padding == 1L) {
+    encoded[[length(encoded)]] <- paste0(substr(encoded[[length(encoded)]], 1L, 3L), "=")
+  } else if (padding == 2L) {
+    encoded[[length(encoded)]] <- paste0(substr(encoded[[length(encoded)]], 1L, 2L), "==")
+  }
+  paste0(encoded, collapse = "")
 }
 
 ui <- fluidPage(
   tags$head(
     tags$title("anovapowersim Shiny app"),
+    tags$script(HTML("
+      Shiny.addCustomMessageHandler('downloadPdf', function(message) {
+        const binary = atob(message.content);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = message.filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 0);
+      });
+    ")),
     tags$style(HTML("
       :root {
         --ink: #1f2937;
@@ -425,6 +575,9 @@ ui <- fluidPage(
         color: var(--accent-dark);
         font-weight: 650;
       }
+      .report-download {
+        margin: 0 0 12px;
+      }
       .table-scroll {
         overflow-x: auto;
       }
@@ -510,8 +663,8 @@ ui <- fluidPage(
           "anovapowersim"
         ),
         " R package. Browser runs use analytic power calculations; the R call below shows the equivalent ",
-        code("power_n()"),
-        " simulation call for reproducible workflows."
+        code("power_n_calc()"),
+        " call for reproducible workflows."
       ),
       p(
         "Citation: Azaad, S. (2026). A priori power analysis for ANOVA interaction effects with the anovapowersim R package: a short introduction. ",
@@ -560,6 +713,7 @@ ui <- fluidPage(
             numericInput("target_pes", "Target partial eta squared", value = 0.03, min = 0.001, max = 0.999, step = 0.001),
             numericInput("power", "Target power", value = 0.90, min = 0.001, max = 0.999, step = 0.01),
             numericInput("alpha", "Alpha", value = 0.05, min = 0.001, max = 0.999, step = 0.001),
+            numericInput("epsilon", "Nonsphericity correction", value = power_n_defaults$epsilon, min = 0.001, max = 1, step = 0.01),
             numericInput("n_max", "Search up to n per cell", value = power_n_defaults$n_max, min = 1, step = 100)
           ),
           tags$details(
@@ -590,6 +744,7 @@ ui <- fluidPage(
           uiOutput("progress"),
           uiOutput("summary"),
           uiOutput("warnings"),
+          uiOutput("report_download"),
           uiOutput("result_view_ui")
         ),
         div(
@@ -733,7 +888,8 @@ server <- function(input, output, session) {
       alpha = input$alpha,
       n_start = if (isTRUE(input$use_n_start)) as.integer(input$n_start) else NULL,
       n_max = as.integer(input$n_max),
-      gpower = isTRUE(input$gpower)
+      gpower = isTRUE(input$gpower),
+      epsilon = input$epsilon
     )
     args
   })
@@ -898,6 +1054,34 @@ server <- function(input, output, session) {
     )
   })
 
+  output$report_download <- renderUI({
+    req(result())
+    div(
+      class = "report-download",
+      actionButton("download_report", "Download PDF report", icon = icon("file-pdf-o"))
+    )
+  })
+
+  observeEvent(input$download_report, {
+    fit <- result()
+    req(fit)
+    report_file <- tempfile(fileext = ".pdf")
+    on.exit(unlink(report_file), add = TRUE)
+    tryCatch({
+      write_power_report(report_file, fit)
+      session$sendCustomMessage("downloadPdf", list(
+        filename = sprintf("anovapowersim-power-report-%s.pdf", format(Sys.Date(), "%Y-%m-%d")),
+        content = base64_encode(readBin(report_file, what = "raw", n = file.info(report_file)$size))
+      ))
+    }, error = function(e) {
+      showNotification(
+        paste("Could not create the PDF report:", conditionMessage(e)),
+        type = "error",
+        duration = 10
+      )
+    })
+  })
+
   output$warnings <- renderUI({
     warnings <- run_warnings()
     if (!length(warnings)) {
@@ -916,30 +1100,7 @@ server <- function(input, output, session) {
     results <- as.data.frame(fit$results)
     validate(need(nrow(results) > 0, "No power rows returned."))
     validate(need(any(is.finite(results$power_calc)), "No finite calculated power values returned."))
-
-    has_sim <- "power_sim" %in% names(results) && any(is.finite(results$power_sim))
-    ylim <- range(c(results$power_calc, if (has_sim) results$power_sim, fit$power), na.rm = TRUE)
-    ylim <- c(max(0, ylim[[1]] - 0.05), min(1, ylim[[2]] + 0.05))
-    plot(
-      results$n_per_cell,
-      results$power_calc,
-      type = "b",
-      pch = 17,
-      col = "#0f766e",
-      ylim = ylim,
-      xlab = "n per between-subjects cell",
-      ylab = "Power"
-    )
-    if (has_sim) {
-      lines(results$n_per_cell, results$power_sim, type = "b", pch = 19, col = "#374151")
-    }
-    abline(h = fit$power, lty = 2, col = "#9f1239")
-    legend_labels <- c("Calculated", if (has_sim) "Simulated", "Target")
-    legend_cols <- c("#0f766e", if (has_sim) "#374151", "#9f1239")
-    legend_pch <- c(17, if (has_sim) 19, NA)
-    legend_lty <- c(1, if (has_sim) 1, 2)
-    legend("bottomright", legend = legend_labels, col = legend_cols,
-           lty = legend_lty, pch = legend_pch, bty = "n")
+    draw_power_curve(fit)
   })
 
   output$results_table <- renderTable({

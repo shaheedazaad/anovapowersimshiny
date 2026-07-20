@@ -55,7 +55,8 @@ power_n_calc <- function(between = NULL,
                          alpha = 0.05,
                          n_start = NULL,
                          n_max = 5000,
-                         gpower = FALSE) {
+                         gpower = FALSE,
+                         epsilon = 1) {
   setup <- prepare_power_n_calc_inputs(
     between = between,
     within = within,
@@ -65,7 +66,8 @@ power_n_calc <- function(between = NULL,
     alpha = alpha,
     n_start = n_start,
     n_max = n_max,
-    gpower = gpower
+    gpower = gpower,
+    epsilon = epsilon
   )
 
   curve <- analytic_power_search(
@@ -76,7 +78,8 @@ power_n_calc <- function(between = NULL,
     alpha = alpha,
     n_start = setup$n_start,
     n_max = setup$n_max,
-    gpower = setup$gpower
+    gpower = setup$gpower,
+    epsilon = setup$epsilon
   )
 
   n_needed <- estimate_calc_n_needed(curve, target = power)
@@ -98,6 +101,7 @@ power_n_calc <- function(between = NULL,
       n_needed = n_needed,
       total_n_needed = total_n_needed,
       gpower = setup$gpower,
+      epsilon = setup$epsilon,
       ss_type = NULL,
       design = setup$spec,
       call = match.call()
@@ -111,7 +115,7 @@ power_n_calc <- function(between = NULL,
 #' @noRd
 prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
                                         power, alpha, n_start, n_max,
-                                        gpower) {
+                                        gpower, epsilon = 1) {
   spec <- balanced_anova_design(between = between, within = within)
   term <- resolve_design_term(term, spec)
   assert_unit_interval(target_pes, "target_pes")
@@ -137,6 +141,7 @@ prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
   if (!is.logical(gpower) || length(gpower) != 1L || is.na(gpower)) {
     stop("`gpower` must be TRUE or FALSE.", call. = FALSE)
   }
+  epsilon <- validate_analytic_epsilon(epsilon, spec = spec, term = term)
   if (!is.numeric(n_max) || length(n_max) != 1L ||
       n_max < 1 || n_max != as.integer(n_max)) {
     stop("`n_max` must be a single positive integer.", call. = FALSE)
@@ -169,8 +174,41 @@ prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
     term = term,
     n_start = n_start,
     n_max = n_max,
-    gpower = gpower
+    gpower = gpower,
+    epsilon = epsilon
   )
+}
+
+validate_analytic_epsilon <- function(epsilon, spec, term) {
+  if (!is.numeric(epsilon) || length(epsilon) != 1L ||
+      !is.finite(epsilon) || epsilon <= 0 || epsilon > 1) {
+    stop("`epsilon` must be a single finite number in (0, 1].", call. = FALSE)
+  }
+
+  term_factors <- strsplit(term, ":", fixed = TRUE)[[1L]]
+  within_factors <- intersect(term_factors, spec$within)
+  if (!length(within_factors)) {
+    if (epsilon < 1) {
+      stop(
+        "`epsilon` must be 1 for a purely between-subject term; nonsphericity corrections apply only to terms containing a within-subject factor.",
+        call. = FALSE
+      )
+    }
+    return(1)
+  }
+
+  within_term_df <- prod(spec$level_counts[within_factors] - 1L)
+  lower_bound <- 1 / within_term_df
+  if (epsilon < lower_bound) {
+    stop(
+      "`epsilon` must be at least ", format(lower_bound),
+      " for term '", term, "' because its within-subject component has ",
+      within_term_df, " degree", if (within_term_df == 1L) "" else "s", " of freedom.",
+      call. = FALSE
+    )
+  }
+
+  as.numeric(epsilon)
 }
 
 
@@ -183,19 +221,23 @@ minimum_analytic_n <- function(spec) {
 
 #' @keywords internal
 #' @noRd
-analytic_power_row <- function(n, spec, term, target_pes, alpha, gpower) {
+analytic_power_row <- function(n, spec, term, target_pes, alpha, gpower,
+                               epsilon = 1) {
   dfs <- analytic_term_dfs(spec = spec, term = term, n = n)
   total_n <- as.integer(n * max(1L, spec$n_between_cells))
-  ncp <- ncp_from_pes(
+  uncorrected_ncp <- ncp_from_pes(
     pes = target_pes,
     total_n = total_n,
     den_df = dfs$den_df,
     gpower = gpower
   )
+  num_df <- epsilon * dfs$num_df
+  den_df <- epsilon * dfs$den_df
+  ncp <- epsilon * uncorrected_ncp
   power_calc <- stats::pf(
-    stats::qf(1 - alpha, dfs$num_df, dfs$den_df),
-    dfs$num_df,
-    dfs$den_df,
+    stats::qf(1 - alpha, num_df, den_df),
+    num_df,
+    den_df,
     ncp = ncp,
     lower.tail = FALSE
   )
@@ -204,8 +246,9 @@ analytic_power_row <- function(n, spec, term, target_pes, alpha, gpower) {
     n_per_cell = as.integer(n),
     total_n = total_n,
     n_sims = NA_integer_,
-    num_df = dfs$num_df,
-    den_df = dfs$den_df,
+    epsilon = epsilon,
+    num_df = num_df,
+    den_df = den_df,
     ncp = ncp,
     power_calc = power_calc,
     power_sim = NA_real_,
@@ -248,7 +291,7 @@ estimate_calc_n_needed <- function(curve, target) {
 #' @keywords internal
 #' @noRd
 analytic_power_search <- function(spec, term, target_pes, target_power, alpha,
-                                  n_start, n_max, gpower) {
+                                  n_start, n_max, gpower, epsilon = 1) {
   visited <- list()
 
   run_one <- function(n) {
@@ -260,7 +303,8 @@ analytic_power_search <- function(spec, term, target_pes, target_power, alpha,
       term = term,
       target_pes = target_pes,
       alpha = alpha,
-      gpower = gpower
+      gpower = gpower,
+      epsilon = epsilon
     )
     visited[[key]] <<- row
     row
