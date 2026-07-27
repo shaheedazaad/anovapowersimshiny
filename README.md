@@ -1,6 +1,6 @@
 # anovapowersim shinylive app
 
-This repository contains a Shiny app for calculating ANOVA power in the browser with shinylive. The app uses the vendored calculation-only `power_n_calc()` implementation and displays an equivalent `anovapowersim::power_n_calc()` call for reproducible R workflows. (https://shaheedazaad.github.io/anovapowersim/)
+This repository contains a Shiny app for running calculation-only ANOVA power analyses in the browser with shinylive. The app vendors the `power_n_calc()`, `power_achieved_calc()`, and `power_sensitivity_calc()` backends, displays the equivalent `anovapowersim` call for reproducible R workflows, and provides PDF reports for every analysis type. (https://shaheedazaad.github.io/anovapowersim/)
 
 ## Local Shiny run
 
