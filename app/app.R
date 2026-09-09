@@ -243,8 +243,7 @@ format_call <- function(function_name, args) {
 
   lines <- sprintf("  %s = %s", names(args), vapply(args, value_to_code, character(1)))
   paste0(
-    "install.packages(\"pak\")\n",
-    "pak::pak(\"shaheedazaad/anovapowersim\")\n",
+    "install.packages(\"anovapowersim\")\n",
     "library(anovapowersim)\n\n",
     function_name, "(\n", paste(lines, collapse = ",\n"), "\n)"
   )
