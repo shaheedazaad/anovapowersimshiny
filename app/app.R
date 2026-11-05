@@ -1662,7 +1662,7 @@ server <- function(input, output, session) {
       tabsetPanel(
         id = "result_view",
         type = "tabs",
-        tabPanel("Plot", plotOutput("curve_plot", height = 300)),
+        tabPanel("Plot", imageOutput("curve_plot", height = 300)),
         tabPanel("Table", div(class = "table-scroll", tableOutput("results_table")))
       )
     )
@@ -1733,18 +1733,32 @@ server <- function(input, output, session) {
     )
   })
 
-  output$curve_plot <- renderPlot({
+  # Drawn to a PNG and sent with renderImage() rather than renderPlot():
+  # renderPlot() crashes Shinylive in Safari 27 ("Maximum call stack size
+  # exceeded"; posit-dev/r-shinylive#204), while renderImage() works.
+  output$curve_plot <- renderImage({
     fit <- result()
     req(fit)
     results <- as.data.frame(fit$results)
     validate(need(nrow(results) > 0, "No power rows returned."))
     validate(need(any(is.finite(results$power_calc)), "No finite calculated power values returned."))
-    if (identical(result_type(), "sensitivity")) {
-      draw_sensitivity_curve(fit)
-    } else {
-      draw_power_curve(fit)
-    }
-  })
+    client <- session$clientData
+    width <- client$output_curve_plot_width
+    height <- client$output_curve_plot_height
+    req(width > 0, height > 0)
+    pixel_ratio <- client$pixelratio %||% 1
+    file <- tempfile(fileext = ".png")
+    grDevices::png(file, width = width * pixel_ratio, height = height * pixel_ratio, res = 72 * pixel_ratio)
+    tryCatch(
+      if (identical(result_type(), "sensitivity")) {
+        draw_sensitivity_curve(fit)
+      } else {
+        draw_power_curve(fit)
+      },
+      finally = grDevices::dev.off()
+    )
+    list(src = file, contentType = "image/png", width = width, height = height, alt = "Power curve")
+  }, deleteFile = TRUE)
 
   output$results_table <- renderTable({
     fit <- result()
