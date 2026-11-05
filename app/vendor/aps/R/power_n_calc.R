@@ -83,6 +83,11 @@ power_n_calc <- function(between = NULL,
   )
 
   n_needed <- estimate_calc_n_needed(curve, target = power)
+  warn_target_power_not_reached(
+    n_needed = n_needed,
+    target = power,
+    n_max = setup$n_max
+  )
   total_n_needed <- if (is.na(n_needed)) {
     NA_integer_
   } else {
@@ -141,6 +146,7 @@ prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
   if (!is.logical(gpower) || length(gpower) != 1L || is.na(gpower)) {
     stop("`gpower` must be TRUE or FALSE.", call. = FALSE)
   }
+  warn_gpower_within_term_df(gpower = gpower)
   epsilon <- validate_analytic_epsilon(epsilon, spec = spec, term = term)
   if (!is.numeric(n_max) || length(n_max) != 1L ||
       n_max < 1 || n_max != as.integer(n_max)) {
@@ -158,7 +164,7 @@ prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
   n_max <- as.integer(n_max)
   if (n_start < n_min) {
     stop(
-      "`n_start` is too small for analytic power calculation. ",
+      "`n_start` is too small for calculated power. ",
       "Use `n_start >= ", n_min, "` so the denominator degrees of freedom ",
       "are positive.",
       call. = FALSE
@@ -182,7 +188,8 @@ prepare_power_n_calc_inputs <- function(between, within, term, target_pes,
 validate_analytic_epsilon <- function(epsilon, spec, term) {
   if (!is.numeric(epsilon) || length(epsilon) != 1L ||
       !is.finite(epsilon) || epsilon <= 0 || epsilon > 1) {
-    stop("`epsilon` must be a single finite number in (0, 1].", call. = FALSE)
+    stop("`epsilon` must be a single finite number in (0, 1].",
+         call. = FALSE)
   }
 
   term_factors <- strsplit(term, ":", fixed = TRUE)[[1L]]
@@ -190,20 +197,23 @@ validate_analytic_epsilon <- function(epsilon, spec, term) {
   if (!length(within_factors)) {
     if (epsilon < 1) {
       stop(
-        "`epsilon` must be 1 for a purely between-subject term; nonsphericity corrections apply only to terms containing a within-subject factor.",
+        "`epsilon` must be 1 for a purely between-subject term; ",
+        "nonsphericity corrections apply only to terms containing a ",
+        "within-subject factor.",
         call. = FALSE
       )
     }
     return(1)
   }
 
-  within_term_df <- prod(spec$level_counts[within_factors] - 1L)
-  lower_bound <- 1 / within_term_df
+  term_df <- within_term_df(spec = spec, term = term)
+  lower_bound <- 1 / term_df
   if (epsilon < lower_bound) {
     stop(
       "`epsilon` must be at least ", format(lower_bound),
       " for term '", term, "' because its within-subject component has ",
-      within_term_df, " degree", if (within_term_df == 1L) "" else "s", " of freedom.",
+      term_df, " degree", if (term_df == 1L) "" else "s",
+      " of freedom.",
       call. = FALSE
     )
   }
@@ -235,7 +245,7 @@ analytic_power_row <- function(n, spec, term, target_pes, alpha, gpower,
   den_df <- epsilon * dfs$den_df
   ncp <- epsilon * uncorrected_ncp
   power_calc <- stats::pf(
-    stats::qf(1 - alpha, num_df, den_df),
+    stats::qf(alpha, num_df, den_df, lower.tail = FALSE),
     num_df,
     den_df,
     ncp = ncp,
@@ -246,6 +256,8 @@ analytic_power_row <- function(n, spec, term, target_pes, alpha, gpower,
     n_per_cell = as.integer(n),
     total_n = total_n,
     n_sims = NA_integer_,
+    valid_sims = NA_integer_,
+    failed_sims = NA_integer_,
     epsilon = epsilon,
     num_df = num_df,
     den_df = den_df,
@@ -266,8 +278,8 @@ analytic_term_dfs <- function(spec, term, n) {
 
   within_factors <- intersect(term_factors, spec$within)
   if (length(within_factors)) {
-    within_term_df <- prod(spec$level_counts[within_factors] - 1L)
-    den_df <- (total_n - spec$n_between_cells) * within_term_df
+    term_df <- within_term_df(spec = spec, term = term)
+    den_df <- (total_n - spec$n_between_cells) * term_df
   } else {
     den_df <- total_n - spec$n_between_cells
   }
@@ -312,11 +324,21 @@ analytic_power_search <- function(spec, term, target_pes, target_power, alpha,
 
   lo <- NA_integer_
   hi <- NA_integer_
+  n_min <- minimum_analytic_n(spec)
   n <- as.integer(n_start)
   repeat {
     row <- run_one(n)
     if (is.finite(row$power_calc) && row$power_calc >= target_power) {
       hi <- n
+      if (is.na(lo) && n > n_min) {
+        lower_row <- run_one(n_min)
+        if (is.finite(lower_row$power_calc) &&
+            lower_row$power_calc >= target_power) {
+          hi <- n_min
+        } else {
+          lo <- n_min
+        }
+      }
       break
     }
     lo <- n

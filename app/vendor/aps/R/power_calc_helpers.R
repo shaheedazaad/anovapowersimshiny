@@ -132,3 +132,31 @@ ncp_from_pes <- function(pes, total_n, den_df, gpower) {
   f2 <- pes / (1 - pes)
   if (isTRUE(gpower)) total_n * f2 else den_df * f2
 }
+
+
+#' @keywords internal
+#' @noRd
+within_term_df <- function(spec, term) {
+  term_factors <- strsplit(term, ":", fixed = TRUE)[[1L]]
+  within_factors <- intersect(term_factors, spec$within)
+  if (!length(within_factors)) return(1L)
+  as.integer(prod(spec$level_counts[within_factors] - 1L))
+}
+
+
+#' @keywords internal
+#' @noRd
+warn_gpower_within_term_df <- function(gpower) {
+  if (!isTRUE(gpower)) return(invisible(NULL))
+  warning(
+    "`gpower = TRUE` calibrates means to G*Power's noncentrality ",
+    "convention, so the partial eta squared actually achieved can differ ",
+    "from `target_pes` -- this is more pronounced for small samples and ",
+    "terms with more degrees of freedom. The default `gpower = FALSE` is ",
+    "recommended if you want `target_pes` to match your reported or ",
+    "expected partial eta squared exactly.",
+    call. = FALSE,
+    immediate. = TRUE
+  )
+  invisible(NULL)
+}

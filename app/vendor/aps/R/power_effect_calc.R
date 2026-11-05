@@ -209,6 +209,7 @@ prepare_fixed_calc_inputs <- function(between, within, term, n, alpha,
   if (!is.logical(gpower) || length(gpower) != 1L || is.na(gpower)) {
     stop("`gpower` must be TRUE or FALSE.", call. = FALSE)
   }
+  warn_gpower_within_term_df(gpower = gpower)
   epsilon <- validate_analytic_epsilon(epsilon, spec = spec, term = term)
   n <- validate_fixed_analytic_n(n, spec)
 

@@ -46,3 +46,22 @@ as_unit_interval <- function(x, arg) {
 make_cell_labels <- function(prefix, n) {
   sprintf(".anovapowersim_%s_%03d", prefix, seq_len(n))
 }
+
+
+#' @keywords internal
+#' @noRd
+warn_target_power_not_reached <- function(n_needed, target, n_max) {
+  if (!is.na(n_needed)) return(invisible(NULL))
+  warning(
+    sprintf(
+      paste(
+        "Target power %.3f was not reached by `n_max = %d`.",
+        "Increase `n_max` and rerun the search."
+      ),
+      target,
+      as.integer(n_max)
+    ),
+    call. = FALSE
+  )
+  invisible(NULL)
+}

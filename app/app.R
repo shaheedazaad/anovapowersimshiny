@@ -12,7 +12,8 @@ for (file in c(
   "power_calc_helpers.R",
   "power_n_calc.R",
   "power_effect_calc.R",
-  "print_methods.R"
+  "print_methods.R",
+  "f_to_pes.R"
 )) {
   source(file.path(vendor_dir, file), local = TRUE)
 }
@@ -58,6 +59,7 @@ power_effect_defaults <- list(
 
 power_n_call_args <- function(args) {
   out <- args[c("between", "within", "term", "target_pes", "epsilon")]
+  out$target_pes <- target_pes_code(args)
   if (!isTRUE(all.equal(args$power, power_n_defaults$power))) {
     out$power <- args$power
   }
@@ -78,6 +80,7 @@ power_n_call_args <- function(args) {
 
 power_achieved_call_args <- function(args) {
   out <- args[c("between", "within", "term", "target_pes", "n", "epsilon")]
+  out$target_pes <- target_pes_code(args)
   if (!isTRUE(all.equal(args$alpha, power_effect_defaults$alpha))) {
     out$alpha <- args$alpha
   }
@@ -100,6 +103,54 @@ power_sensitivity_call_args <- function(args) {
   out
 }
 
+# Inverse of f_to_pes(), used to report Cohen's f alongside partial eta squared.
+pes_to_f <- function(pes) {
+  out <- rep(NA_real_, length(pes))
+  ok <- is.finite(pes) & pes >= 0 & pes < 1
+  out[ok] <- sqrt(pes[ok] / (1 - pes[ok]))
+  out
+}
+
+# Resolve the effect-size inputs to partial eta squared. Invalid Cohen's f
+# values become NA so the backend reports the problem through its own checks.
+resolve_target_pes <- function(metric, pes, f) {
+  if (!identical(metric, "f")) {
+    return(pes)
+  }
+  tryCatch(f_to_pes(f), error = function(e) NA_real_)
+}
+
+# Code for the displayed call: `f_to_pes(<f>)` when Cohen's f was entered.
+target_pes_code <- function(args) {
+  if (identical(args$effect_metric, "f")) {
+    structure(sprintf("f_to_pes(%s)", args$target_f), class = "r_code")
+  } else {
+    args$target_pes
+  }
+}
+
+effect_size_text <- function(fit, digits = 3) {
+  if (is.finite(fit$target_f %||% NA_real_)) {
+    sprintf(
+      "Cohen's f = %s (partial eta squared = %s)",
+      format_decimal(fit$target_f, digits),
+      format_decimal(fit$target_pes, digits)
+    )
+  } else {
+    sprintf("partial eta squared = %s", format_decimal(fit$target_pes, digits))
+  }
+}
+
+effect_metric_input <- function(id) {
+  div(class = "effect-metric", radioButtons(
+    id,
+    "Effect size",
+    choices = c("Partial eta squared" = "pes", "Cohen's f" = "f"),
+    selected = "pes",
+    inline = TRUE
+  ))
+}
+
 `%||%` <- function(x, y) {
   if (is.null(x)) y else x
 }
@@ -109,7 +160,9 @@ should_show_power_warning <- function(message) {
     "^package .+ was built under R version",
     "^Package version mismatch for ",
     "^namespace .+ is not available and has been replaced",
-    "^replacing previous import"
+    "^replacing previous import",
+    # The result statement already explains this and names the app's input.
+    "^Target power .* was not reached by `n_max"
   )
   !any(grepl(paste(hidden_patterns, collapse = "|"), message))
 }
@@ -227,6 +280,9 @@ format_call <- function(function_name, args) {
   value_to_code <- function(x) {
     if (is.null(x)) {
       return("NULL")
+    }
+    if (inherits(x, "r_code")) {
+      return(unclass(x))
     }
     if (is.logical(x)) {
       return(if (isTRUE(x)) "TRUE" else "FALSE")
@@ -411,7 +467,7 @@ write_power_report <- function(file, fit) {
   graphics::text(0.06, 0.84, paste("Tested term:", fit$term), adj = 0, cex = 0.8)
   graphics::text(
     0.06, 0.805,
-    sprintf("Target power: %.3f    Alpha: %.3f    Target partial eta squared: %.3f", fit$power, fit$alpha, fit$target_pes),
+    sprintf("Target power: %.3f    Alpha: %.3f    Target effect: %s", fit$power, fit$alpha, effect_size_text(fit, 4)),
     adj = 0, cex = 0.8
   )
   graphics::text(0.06, 0.775, sprintf("Nonsphericity correction: %.3f", fit$epsilon), adj = 0, cex = 0.8)
@@ -443,7 +499,7 @@ write_achieved_report <- function(file, fit) {
   graphics::text(0.06, 0.805, report_fixed_n_text(fit), adj = 0, cex = 0.8)
   graphics::text(
     0.06, 0.77,
-    sprintf("Alpha: %.3f    Partial eta squared: %.4f", fit$alpha, fit$target_pes),
+    sprintf("Alpha: %.3f    Effect size: %s", fit$alpha, effect_size_text(fit, 4)),
     adj = 0, cex = 0.8
   )
   graphics::text(0.06, 0.735, report_convention_text(fit), adj = 0, cex = 0.8)
@@ -487,8 +543,9 @@ write_sensitivity_report <- function(file, fit) {
   graphics::text(0.06, 0.70, report_convention_text(fit), adj = 0, cex = 0.8)
   sensitivity_text <- if (is.finite(fit$pes_needed)) {
     sprintf(
-      "Minimum detectable partial eta squared: %.6f%s",
+      "Minimum detectable partial eta squared: %.6f (Cohen's f = %.4f)%s",
       fit$pes_needed,
+      pes_to_f(fit$pes_needed),
       if (isTRUE(fit$converged)) "" else " (search did not converge)"
     )
   } else {
@@ -667,6 +724,9 @@ ui <- fluidPage(
         justify-content: center;
         padding: 0;
         width: 38px;
+      }
+      .inline-grid .effect-metric {
+        grid-column: 1 / -1;
       }
       .inline-grid {
         display: grid;
@@ -962,7 +1022,15 @@ ui <- fluidPage(
                 ),
                 div(
                   class = "inline-grid",
-                  numericInput("target_pes", "Target partial eta squared", value = 0.03, min = 0.001, max = 0.999, step = 0.001),
+                  effect_metric_input("effect_metric"),
+                  conditionalPanel(
+                    condition = "input.effect_metric != 'f'",
+                    numericInput("target_pes", "Target partial eta squared", value = 0.03, min = 0.001, max = 0.999, step = 0.001)
+                  ),
+                  conditionalPanel(
+                    condition = "input.effect_metric == 'f'",
+                    numericInput("target_f", "Target Cohen's f", value = 0.25, min = 0.001, step = 0.01)
+                  ),
                   numericInput("power", "Target power", value = 0.90, min = 0.001, max = 0.999, step = 0.01),
                   numericInput("alpha", "Alpha", value = 0.05, min = 0.001, max = 0.999, step = 0.001),
                   numericInput("epsilon", "Nonsphericity correction", value = power_n_defaults$epsilon, min = 0.001, max = 1, step = 0.01),
@@ -996,7 +1064,15 @@ ui <- fluidPage(
                 ),
                 div(
                   class = "inline-grid",
-                  numericInput("achieved_target_pes", "Partial eta squared", value = 0.08, min = 0.001, max = 0.999, step = 0.001),
+                  effect_metric_input("achieved_effect_metric"),
+                  conditionalPanel(
+                    condition = "input.achieved_effect_metric != 'f'",
+                    numericInput("achieved_target_pes", "Partial eta squared", value = 0.08, min = 0.001, max = 0.999, step = 0.001)
+                  ),
+                  conditionalPanel(
+                    condition = "input.achieved_effect_metric == 'f'",
+                    numericInput("achieved_target_f", "Cohen's f", value = 0.25, min = 0.001, step = 0.01)
+                  ),
                   numericInput("achieved_n", "n per between-subject cell", value = 30, min = 2, step = 1),
                   numericInput("achieved_alpha", "Alpha", value = power_effect_defaults$alpha, min = 0.001, max = 0.999, step = 0.001),
                   numericInput("achieved_epsilon", "Nonsphericity correction", value = power_effect_defaults$epsilon, min = 0.001, max = 1, step = 0.01)
@@ -1209,13 +1285,15 @@ server <- function(input, output, session) {
     c(
       design_call_args(),
       list(
-        target_pes = input$target_pes,
+        target_pes = resolve_target_pes(input$effect_metric, input$target_pes, input$target_f),
         power = input$power,
         alpha = input$alpha,
         n_start = if (isTRUE(input$use_n_start)) as.integer(input$n_start) else NULL,
         n_max = as.integer(input$n_max),
         gpower = isTRUE(input$gpower),
-        epsilon = input$epsilon
+        epsilon = input$epsilon,
+        effect_metric = input$effect_metric %||% "pes",
+        target_f = input$target_f
       )
     )
   })
@@ -1224,11 +1302,13 @@ server <- function(input, output, session) {
     c(
       design_call_args(),
       list(
-        target_pes = input$achieved_target_pes,
+        target_pes = resolve_target_pes(input$achieved_effect_metric, input$achieved_target_pes, input$achieved_target_f),
         n = as.integer(input$achieved_n),
         alpha = input$achieved_alpha,
         gpower = isTRUE(input$achieved_gpower),
-        epsilon = input$achieved_epsilon
+        epsilon = input$achieved_epsilon,
+        effect_metric = input$achieved_effect_metric %||% "pes",
+        target_f = input$achieved_target_f
       )
     )
   })
@@ -1271,13 +1351,21 @@ server <- function(input, output, session) {
     )
   })
 
-  run_analysis <- function(kind, backend, args) {
+  # Cohen's f entered by the user (NA when partial eta squared was entered).
+  entered_f <- function(args) {
+    if (identical(args$effect_metric, "f")) args$target_f %||% NA_real_ else NA_real_
+  }
+
+  run_analysis <- function(kind, backend, args, target_f = NA_real_) {
+    args$effect_metric <- NULL
+    args$target_f <- NULL
     # R function arguments are lazy. Force reactive-derived `args` while this
     # helper is still running inside the button observer; otherwise the first
     # evaluation would occur in `onFlushed()`, outside a reactive context.
     force(kind)
     force(backend)
     force(args)
+    force(target_f)
 
     captured_warnings <- character()
     run_warnings(character())
@@ -1318,6 +1406,9 @@ server <- function(input, output, session) {
           }
         }
       )
+      if (!is.null(fit)) {
+        fit$target_f <- target_f
+      }
       result(fit)
     }, once = TRUE)
   }
@@ -1326,7 +1417,8 @@ server <- function(input, output, session) {
     run_analysis(
       kind = "sample_size",
       backend = power_n_backend,
-      args = power_n_calc_args(power_args())
+      args = power_n_calc_args(power_args()),
+      target_f = entered_f(power_args())
     )
   })
 
@@ -1334,7 +1426,8 @@ server <- function(input, output, session) {
     run_analysis(
       kind = "achieved",
       backend = power_achieved_backend,
-      args = achieved_args()
+      args = achieved_args(),
+      target_f = entered_f(achieved_args())
     )
   })
 
@@ -1425,13 +1518,13 @@ server <- function(input, output, session) {
 
     if (identical(result_type(), "sample_size")) {
       power_text <- format_decimal(fit$power)
-      pes_text <- format_decimal(fit$target_pes)
+      pes_text <- effect_size_text(fit)
       n_per_cell_text <- format_count(fit$n_needed)
       total_n_text <- format_count(fit$total_n_needed)
       detail <- if (is.na(fit$n_needed)) {
         tagList(
           sprintf(
-            "The search ran up to n_max = %s participants per between-subjects cell at alpha = %s with target partial eta squared = %s.",
+            "The search ran up to n_max = %s participants per between-subjects cell at alpha = %s with target %s.",
             format_count(max(fit$results$n_per_cell, na.rm = TRUE)),
             alpha_text,
             pes_text
@@ -1442,14 +1535,14 @@ server <- function(input, output, session) {
         )
       } else if (between_cells > 1L) {
         sprintf(
-          "This corresponds to %s participants per between-subjects cell at alpha = %s with target partial eta squared = %s.",
+          "This corresponds to %s participants per between-subjects cell at alpha = %s with target %s.",
           n_per_cell_text,
           alpha_text,
           pes_text
         )
       } else {
         sprintf(
-          "This is based on alpha = %s and target partial eta squared = %s.",
+          "This is based on alpha = %s and target %s.",
           alpha_text,
           pes_text
         )
@@ -1510,10 +1603,10 @@ server <- function(input, output, session) {
         p(
           class = "result-detail",
           sprintf(
-            "%s Alpha = %s and partial eta squared = %s.",
+            "%s Alpha = %s and %s.",
             n_detail,
             alpha_text,
-            format_decimal(fit$target_pes)
+            effect_size_text(fit)
           )
         )
       ))
@@ -1527,7 +1620,9 @@ server <- function(input, output, session) {
           class = "result-sentence",
           "The minimum detectable partial eta squared is ",
           strong(format_decimal(fit$pes_needed, digits = 4)),
-          " for the ",
+          " (Cohen's f = ",
+          strong(format_decimal(pes_to_f(fit$pes_needed), digits = 4)),
+          ") for the ",
           strong(fit$term),
           " ",
           kind,
@@ -1658,7 +1753,17 @@ server <- function(input, output, session) {
     simulation_fields <- c("n_sims", "valid_sims", "failed_sims", "power_sim")
     results <- results[, setdiff(names(results), simulation_fields), drop = FALSE]
     if ("target_pes" %in% names(results)) {
-      results$target_pes <- sprintf("%.6f", results$target_pes)
+      pes <- results$target_pes
+      results$target_pes <- sprintf("%.6f", pes)
+      if (identical(result_type(), "sensitivity")) {
+        f_col <- sprintf("%.4f", pes_to_f(pes))
+        at <- match("target_pes", names(results))
+        results <- cbind(
+          results[, seq_len(at), drop = FALSE],
+          cohens_f = f_col,
+          results[, -seq_len(at), drop = FALSE]
+        )
+      }
     }
     results
   }, striped = TRUE, bordered = TRUE, digits = 3)
